@@ -3,116 +3,195 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { API_CONFIG } from "@/shared/config/api/api";
 
 interface UseRoomWebSocketProps {
-  roomId: string;
-  userName: string;
+    roomId: string;
+    userName: string;
+    onMessage?: (message: unknown) => void;
 }
 
-export function useRoomWebSocket({ roomId, userName }: UseRoomWebSocketProps) {
-  const wsRef = useRef<WebSocket | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+export function useRoomWebSocket({
+    roomId,
+    userName,
+    onMessage,
+}: UseRoomWebSocketProps) {
+    const wsRef = useRef<WebSocket | null>(null);
+    const connectRef = useRef<() => void>(() => {});
+    const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null
+    );
+    const shouldReconnectRef = useRef(false);
+    const messageQueueRef = useRef<unknown[]>([]);
+    const [isConnected, setIsConnected] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
-  // Выносим disconnect в начало, чтобы connect мог его использовать
-  const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    if (wsRef.current) {
-      wsRef.current.close(1000, "User left");
-      wsRef.current = null;
-    }
-    setIsConnected(false);
-  }, []);
-
-  const connect = useCallback(() => {
-    if (!roomId || !userName) {
-      setError("Room ID or user name is missing");
-      return;
-    }
-
-    // Если уже есть соединение, не создаём новое
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      return;
-    }
-
-    const wsUrl = `${API_CONFIG.wsURL}/api/rooms/${roomId}/ws?name=${encodeURIComponent(userName)}`;
-    console.log("Connecting to WebSocket:", wsUrl);
-
-    try {
-      wsRef.current = new WebSocket(wsUrl);
-
-      wsRef.current.onopen = () => {
-        console.log("WebSocket connected to room:", roomId);
-        setIsConnected(true);
-        setError(null);
-        // Очищаем таймер переподключения при успешном соединении
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = null;
+    const flushQueue = useCallback(() => {
+        const socket = wsRef.current;
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+            return;
         }
-      };
 
-      wsRef.current.onmessage = (event) => {
+        while (messageQueueRef.current.length > 0) {
+            const payload = messageQueueRef.current.shift();
+            if (payload === undefined) continue;
+            try {
+                socket.send(JSON.stringify(payload));
+            } catch (err) {
+                console.error("Failed to send queued WebSocket message:", err);
+            }
+        }
+    }, []);
+
+    const cleanupSocket = useCallback(
+        ({ resetQueue = false }: { resetQueue?: boolean } = {}) => {
+            if (wsRef.current) {
+                wsRef.current.onopen = null;
+                wsRef.current.onclose = null;
+                wsRef.current.onmessage = null;
+                wsRef.current.onerror = null;
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+            if (shouldReconnectRef.current) {
+                setIsConnected(false);
+            }
+            if (resetQueue) {
+                messageQueueRef.current = [];
+            }
+        },
+        []
+    );
+
+    const connect = useCallback(() => {
+        if (!roomId || !userName) {
+            setError("Room ID or user name is missing");
+            return;
+        }
+
+        if (
+            wsRef.current &&
+            (wsRef.current.readyState === WebSocket.OPEN ||
+                wsRef.current.readyState === WebSocket.CONNECTING)
+        ) {
+            return;
+        }
+
         try {
-          const data = JSON.parse(event.data);
-          console.log("WebSocket message:", data);
-          // Здесь будет обработка WebRTC signaling сообщений
+            const socket = new WebSocket(
+                `${
+                    API_CONFIG.wsURL
+                }/api/rooms/${roomId}/ws?name=${encodeURIComponent(
+                    userName
+                )}`
+            );
+
+            wsRef.current = socket;
+            setError(null);
+
+            socket.onopen = () => {
+                console.log("WebSocket connected");
+                setIsConnected(true);
+                flushQueue();
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    onMessage?.(data);
+                } catch (err) {
+                    console.error("Error parsing WebSocket message:", err);
+                }
+            };
+
+            socket.onclose = () => {
+                console.log("WebSocket disconnected");
+                setIsConnected(false);
+
+                if (shouldReconnectRef.current) {
+                    reconnectTimeoutRef.current = setTimeout(() => {
+                        connectRef.current?.();
+                    }, 1500);
+                }
+            };
+
+            socket.onerror = (event) => {
+                console.error("WebSocket error:", event);
+                setError("WebSocket connection failed.");
+            };
         } catch (err) {
-          console.error("Error parsing WebSocket message:", err);
+            console.error("Failed to establish WebSocket connection:", err);
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "WebSocket initialization failed"
+            );
         }
-      };
+    }, [roomId, userName, onMessage, flushQueue]);
 
-      wsRef.current.onclose = (event) => {
-        console.log("WebSocket disconnected:", event.code, event.reason);
-        setIsConnected(false);
+    useEffect(() => {
+        connectRef.current = connect;
+    }, [connect]);
 
-        // Автопереподключение только при неожиданном закрытии
-        if (event.code !== 1000 && event.code !== 1001) {
-          console.log("Attempting to reconnect in 3 seconds...");
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, 3000);
+    useEffect(() => {
+        shouldReconnectRef.current = true;
+        connectRef.current?.();
+        return () => {
+            shouldReconnectRef.current = false;
+            if (reconnectTimeoutRef.current) {
+                clearTimeout(reconnectTimeoutRef.current);
+            }
+            cleanupSocket({ resetQueue: true });
+        };
+    }, [connect, cleanupSocket]);
+
+    const sendMessage = useCallback((message: unknown) => {
+        const socket = wsRef.current;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            try {
+                socket.send(JSON.stringify(message));
+            } catch (err) {
+                console.error("Failed to send WebSocket message:", err);
+                return false;
+            }
+            return true;
         }
-      };
 
-      wsRef.current.onerror = (error) => {
-        console.error("WebSocket connection error:", error);
-        setError(
-          `WebSocket connection failed. Check if server is running at ${API_CONFIG.wsURL}`,
-        );
+        messageQueueRef.current.push(message);
+
+        if (!socket || socket.readyState === WebSocket.CLOSED) {
+            connectRef.current?.();
+        }
+
+        console.warn("WebSocket is not open. Message queued.");
+        return false;
+    }, []);
+
+    const reconnect = useCallback(() => {
+        if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+        }
+
+        shouldReconnectRef.current = true;
         setIsConnected(false);
-      };
-    } catch (err) {
-      console.error("Failed to create WebSocket connection:", err);
-      setError("Failed to create WebSocket connection");
-    }
-  }, [roomId, userName, disconnect]); // Добавляем disconnect в зависимости
-  const sendMessage = useCallback((message: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
-      return true;
-    } else {
-      console.warn("WebSocket is not open. Cannot send message.");
-      return false;
-    }
-  }, []);
+        setError(null);
+        cleanupSocket();
+        connectRef.current?.();
+    }, [cleanupSocket]);
 
-  useEffect(() => {
-    connect();
+    const disconnect = useCallback(() => {
+        if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+            reconnectTimeoutRef.current = null;
+        }
 
-    return () => {
-      disconnect();
+        shouldReconnectRef.current = false;
+        cleanupSocket({ resetQueue: true });
+        setIsConnected(false);
+    }, [cleanupSocket]);
+
+    return {
+        isConnected,
+        error,
+        sendMessage,
+        reconnect,
+        disconnect,
     };
-  }, [connect, disconnect]);
-
-  return {
-    isConnected,
-    error,
-    sendMessage,
-    reconnect: connect,
-    disconnect,
-  };
 }

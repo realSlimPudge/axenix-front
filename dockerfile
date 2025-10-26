@@ -21,6 +21,7 @@ RUN adduser -S nextjs -u 1001
 # Копируем необходимые файлы из стадии сборки
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/.env ./.env
 
 # Если используете standalone режим (рекомендуется)
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./

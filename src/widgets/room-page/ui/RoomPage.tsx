@@ -1,10 +1,13 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useLocalStorage } from "@/shared/lib/hooks/useLocalStorage";
 import { useRoomWebSocket } from "@/features/room-connection";
 import { useRoomMedia } from "@/features/room-connection";
-import { useWebRTC } from "@/features/webrtc-connection";
+import {
+  useWebRTC,
+  type SignalingMessage,
+} from "@/features/webrtc-connection";
 import { RoomHeader } from "./RoomHeader";
 import { RoomVideoGrid } from "./RoomVideoGrid";
 import { RoomInfo } from "./RoomInfo";
@@ -16,8 +19,8 @@ interface RoomInfoData {
   Name: string;
   Owner: string;
   Link: string;
-  Peers: Record<string, any>;
-  Tracks: Record<string, any>;
+  Peers: Record<string, unknown>;
+  Tracks: Record<string, unknown>;
   CreatedAt: string;
   ExpiresAt: string;
 }
@@ -34,15 +37,27 @@ export function RoomPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [globalError, setGlobalError] = useState<string | null>(null);
 
+  const socketMessageHandlerRef =
+    useRef<((message: SignalingMessage) => void) | null>(null);
+  const socketOnMessage = useCallback((message: unknown) => {
+    if (!message || typeof message !== "object") {
+      return;
+    }
+
+    socketMessageHandlerRef.current?.(message as SignalingMessage);
+  }, []);
+
   // WebSocket соединение - conditionally вызываем хук
   const {
     isConnected,
     error: wsError,
     sendMessage,
     reconnect,
+    disconnect,
   } = useRoomWebSocket({
     roomId: roomId || "", // передаем пустую строку если roomId undefined
     userName: userName || "Anonymous",
+    onMessage: socketOnMessage,
   });
 
   // Медиа (камера/микрофон)
@@ -66,14 +81,7 @@ export function RoomPage() {
   });
 
   // WebRTC соединение
-  const {
-    isCallActive,
-    connectionState,
-    remoteStream,
-    remoteUsers,
-    handleWebSocketMessage,
-    endCall,
-  } = useWebRTC({
+  const { remoteParticipants, handleWebSocketMessage, endCall } = useWebRTC({
     localStream,
     sendMessage,
     onRemoteStream: (stream) => {
@@ -84,13 +92,29 @@ export function RoomPage() {
     },
   });
 
-  // Обработка входящих WebSocket сообщений
   useEffect(() => {
-    if (isConnected) {
-      // Здесь мы будем обрабатывать сообщения от WebSocket
-      // Нужно интегрировать с useRoomWebSocket чтобы передавать сообщения в handleWebSocketMessage
-    }
-  }, [isConnected, handleWebSocketMessage]);
+    socketMessageHandlerRef.current = handleWebSocketMessage;
+    return () => {
+      if (socketMessageHandlerRef.current === handleWebSocketMessage) {
+        socketMessageHandlerRef.current = null;
+      }
+    };
+  }, [handleWebSocketMessage]);
+
+  const teardownRef = useRef({ endCall, stopMedia, disconnect });
+  useEffect(() => {
+    teardownRef.current = { endCall, stopMedia, disconnect };
+  }, [endCall, stopMedia, disconnect]);
+
+  useEffect(() => {
+    return () => {
+      const { endCall: disposeCall, stopMedia: disposeMedia, disconnect: disposeSocket } =
+        teardownRef.current;
+      disposeCall();
+      disposeMedia();
+      disposeSocket();
+    };
+  }, []);
 
   // Загружаем информацию о комнате
   useEffect(() => {
@@ -150,6 +174,7 @@ export function RoomPage() {
     console.log("Leaving room...");
     endCall(); // Завершаем WebRTC звонок
     stopMedia();
+    disconnect();
     router.push("/");
   };
 
@@ -228,8 +253,7 @@ export function RoomPage() {
         localVideoRef={localVideoRef as React.RefObject<HTMLVideoElement>}
         isVideoEnabled={isVideoEnabled}
         localStream={localStream}
-        remoteStream={remoteStream}
-        remoteUsers={remoteUsers}
+        remoteParticipants={remoteParticipants}
       />
 
       {roomInfo && (

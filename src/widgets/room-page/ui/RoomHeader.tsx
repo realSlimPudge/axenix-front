@@ -1,6 +1,6 @@
 "use client";
 import { Button } from "@/shared/ui";
-import { Copy, Users, Wifi, WifiOff } from "lucide-react";
+import { Copy, Wifi, WifiOff } from "lucide-react";
 
 interface RoomHeaderProps {
   roomId: string;

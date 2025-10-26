@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 interface UseRoomMediaProps {
   onMediaError?: (error: string) => void;
@@ -14,6 +14,7 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}) {
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const previousCameraStreamRef = useRef<MediaStream | null>(null);
 
   const startMedia = useCallback(async () => {
     try {
@@ -52,6 +53,8 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}) {
         });
 
       setLocalStream(stream);
+      setIsAudioEnabled(Boolean(stream.getAudioTracks().length));
+      setIsVideoEnabled(Boolean(stream.getVideoTracks().length));
 
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -95,6 +98,10 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}) {
 
     setLocalStream(null);
     screenStreamRef.current = null;
+    previousCameraStreamRef.current = null;
+    setIsScreenSharing(false);
+    setIsAudioEnabled(false);
+    setIsVideoEnabled(false);
 
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = null;
@@ -110,6 +117,17 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}) {
       setIsAudioEnabled(newState);
     }
   }, [localStream, isAudioEnabled]);
+
+  useEffect(() => {
+    const videoElement = localVideoRef.current;
+    if (!videoElement) return;
+
+    if (localStream) {
+      videoElement.srcObject = localStream;
+    } else {
+      videoElement.srcObject = null;
+    }
+  }, [localStream, isVideoEnabled]);
 
   const toggleVideo = useCallback(async () => {
     const newState = !isVideoEnabled;
@@ -141,32 +159,63 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}) {
         });
 
         screenStreamRef.current = screenStream;
+        previousCameraStreamRef.current = localStream;
         setIsScreenSharing(true);
+        setIsVideoEnabled(true);
+        setLocalStream(screenStream);
 
-        // Заменяем видео поток на экран
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = screenStream;
         }
 
-        // Когда демонстрация экрана заканчивается
         screenStream.getTracks().forEach((track) => {
           track.onended = () => {
-            setIsScreenSharing(false);
-            if (localVideoRef.current && localStream) {
-              localVideoRef.current.srcObject = localStream;
-            }
+            screenStreamRef.current?.getTracks().forEach((t) => t.stop());
             screenStreamRef.current = null;
+            setIsScreenSharing(false);
+
+            const previous = previousCameraStreamRef.current;
+            previousCameraStreamRef.current = null;
+
+            if (previous) {
+              setLocalStream(previous);
+              setIsVideoEnabled(Boolean(previous.getVideoTracks().length));
+              setIsAudioEnabled(Boolean(previous.getAudioTracks().length));
+              if (localVideoRef.current) {
+                localVideoRef.current.srcObject = previous;
+              }
+            } else {
+              setLocalStream(null);
+              setIsVideoEnabled(false);
+              setIsAudioEnabled(false);
+              if (localVideoRef.current) {
+                localVideoRef.current.srcObject = null;
+              }
+            }
           };
         });
       } else {
-        // Останавливаем демонстрацию экрана
         screenStreamRef.current?.getTracks().forEach((track) => track.stop());
         screenStreamRef.current = null;
         setIsScreenSharing(false);
 
-        // Возвращаем обычный видео поток
-        if (localVideoRef.current && localStream) {
-          localVideoRef.current.srcObject = localStream;
+        const previous = previousCameraStreamRef.current;
+        previousCameraStreamRef.current = null;
+
+        if (previous) {
+          setLocalStream(previous);
+          setIsVideoEnabled(Boolean(previous.getVideoTracks().length));
+          setIsAudioEnabled(Boolean(previous.getAudioTracks().length));
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = previous;
+          }
+        } else {
+          setLocalStream(null);
+          setIsVideoEnabled(false);
+          setIsAudioEnabled(false);
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = null;
+          }
         }
       }
     } catch (err) {

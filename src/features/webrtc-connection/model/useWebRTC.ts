@@ -1,13 +1,46 @@
 "use client";
-import { useState, useCallback, useRef, useEffect } from "react";
-import { usePeerConnection } from "./usePeerConnection";
-import { useSignaling, type SignalingMessage } from "./useSignaling";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { RTC_CONFIG } from "@/shared/config/webrtc";
+import {
+  useSignaling,
+  type JoinedPayload,
+  type SignalingMessage,
+  type SignalingMeta,
+} from "./useSignaling";
+
+interface RemotePeerInfo {
+  peerId: string;
+  userId?: string;
+  name?: string;
+}
+
+interface PeerContext {
+  pc: RTCPeerConnection;
+  makingOffer: boolean;
+  settingRemoteAnswer: boolean;
+}
+
+export interface RemoteParticipant {
+  peerId: string;
+  name?: string;
+  stream: MediaStream | null;
+  connectionState: RTCPeerConnectionState;
+}
 
 interface UseWebRTCProps {
   localStream: MediaStream | null;
-  sendMessage: (message: any) => boolean;
+  sendMessage: (message: SignalingMessage) => boolean;
   onRemoteStream?: (stream: MediaStream | null) => void;
   onConnectionStateChange?: (state: string) => void;
+}
+
+interface UseWebRTCResult {
+  isCallActive: boolean;
+  connectionState: string;
+  remoteParticipants: RemoteParticipant[];
+  startCall: (peerId?: string) => void;
+  endCall: () => void;
+  handleWebSocketMessage: (message: SignalingMessage) => void;
 }
 
 export function useWebRTC({
@@ -15,24 +48,32 @@ export function useWebRTC({
   sendMessage,
   onRemoteStream,
   onConnectionStateChange,
-}: UseWebRTCProps) {
-  const [isCallActive, setIsCallActive] = useState(false);
-  const [remoteUsers, setRemoteUsers] = useState<Map<string, string>>(
-    new Map(),
-  ); // userId -> name
+}: UseWebRTCProps): UseWebRTCResult {
+  const remotePeersInitial = useRef(new Map<string, RemotePeerInfo>());
+  const [remotePeers, setRemotePeersState] = useState(
+    remotePeersInitial.current,
+  );
+  const remotePeersRef = useRef(remotePeersInitial.current);
 
-  const {
-    pc,
-    remoteStream,
-    connectionState,
-    createPeerConnection,
-    addLocalTracks,
-    createOffer,
-    createAnswer,
-    setRemoteDescription,
-    addIceCandidate,
-    closeConnection,
-  } = usePeerConnection();
+  const peerContextsRef = useRef(new Map<string, PeerContext>());
+  const iceCandidateQueuesRef = useRef(
+    new Map<string, RTCIceCandidateInit[]>(),
+  );
+  const remoteStreamsRef = useRef(new Map<string, MediaStream>());
+  const [remoteStreamsState, setRemoteStreamsState] = useState(
+    new Map<string, MediaStream>(),
+  );
+  const connectionStatesRef = useRef(
+    new Map<string, RTCPeerConnectionState>(),
+  );
+  const [connectionStatesState, setConnectionStatesState] = useState(
+    new Map<string, RTCPeerConnectionState>(),
+  );
+
+  const selfPeerIdRef = useRef<string | null>(null);
+  const [isCallActive, setIsCallActive] = useState(false);
+  const [aggregatedConnectionState, setAggregatedConnectionState] =
+    useState<string>("new");
 
   const {
     handleSignalingMessage,
@@ -42,219 +83,539 @@ export function useWebRTC({
     createLeaveMessage,
   } = useSignaling();
 
-  // ICE candidates queue для кандидатов полученных до установки remote description
-  const iceCandidateQueue = useRef<RTCIceCandidateInit[]>([]);
+  const setRemotePeers = useCallback(
+    (
+      updater: (
+        previous: Map<string, RemotePeerInfo>,
+      ) => Map<string, RemotePeerInfo> | null,
+    ) => {
+      setRemotePeersState((previous) => {
+        const result = updater(previous);
+        if (!result) {
+          return previous;
+        }
+        remotePeersRef.current = result;
+        return result;
+      });
+    },
+    [],
+  );
 
-  // Инициализация PeerConnection при появлении локального потока
-  useEffect(() => {
-    if (localStream && !pc) {
-      const newPc = createPeerConnection();
-      addLocalTracks(localStream);
-      console.log("PeerConnection initialized with local stream");
+  const updateRemoteStream = useCallback((peerId: string, stream: MediaStream) => {
+    remoteStreamsRef.current.set(peerId, stream);
+    setRemoteStreamsState(new Map(remoteStreamsRef.current));
+  }, []);
+
+  const clearRemoteStream = useCallback((peerId: string) => {
+    if (remoteStreamsRef.current.delete(peerId)) {
+      setRemoteStreamsState(new Map(remoteStreamsRef.current));
     }
-  }, [localStream, pc, createPeerConnection, addLocalTracks]);
+  }, []);
 
-  // Отслеживаем изменения состояния соединения
-  useEffect(() => {
-    onConnectionStateChange?.(connectionState);
-    setIsCallActive(connectionState === "connected");
-  }, [connectionState, onConnectionStateChange]);
+  const updateConnectionState = useCallback(
+    (peerId: string, state: RTCPeerConnectionState) => {
+      connectionStatesRef.current.set(peerId, state);
+      setConnectionStatesState(new Map(connectionStatesRef.current));
+    },
+    [],
+  );
 
-  // Отслеживаем удаленный поток
-  useEffect(() => {
-    onRemoteStream?.(remoteStream);
-  }, [remoteStream, onRemoteStream]);
+  const destroyPeerConnection = useCallback((peerId: string) => {
+    const ctx = peerContextsRef.current.get(peerId);
+    if (ctx) {
+      ctx.pc.onicecandidate = null;
+      ctx.pc.ontrack = null;
+      ctx.pc.onconnectionstatechange = null;
+      ctx.pc.close();
+      peerContextsRef.current.delete(peerId);
+    }
 
-  // Обработка входящих ICE candidates
-  const processIceCandidateQueue = useCallback(async () => {
-    if (!pc) return;
+    iceCandidateQueuesRef.current.delete(peerId);
+    clearRemoteStream(peerId);
+    if (connectionStatesRef.current.delete(peerId)) {
+      setConnectionStatesState(new Map(connectionStatesRef.current));
+    }
+  }, [clearRemoteStream]);
 
-    for (const candidate of iceCandidateQueue.current) {
+  const syncLocalTracks = useCallback(
+    (pc: RTCPeerConnection) => {
+      if (!localStream) {
+        return;
+      }
+
+      const senders = pc.getSenders();
+      localStream.getTracks().forEach((track) => {
+        const existing = senders.find((sender) => sender.track?.kind === track.kind);
+        if (existing) {
+          existing.replaceTrack(track).catch((error) => {
+            console.warn("Failed to replace track:", error);
+          });
+        } else {
+          pc.addTrack(track, localStream);
+        }
+      });
+    },
+    [localStream],
+  );
+
+  const ensurePeerContext = useCallback(
+    (peerId: string): PeerContext => {
+      let context = peerContextsRef.current.get(peerId);
+      if (context) {
+        return context;
+      }
+
+      const pc = new RTCPeerConnection(RTC_CONFIG);
+      context = {
+        pc,
+        makingOffer: false,
+        settingRemoteAnswer: false,
+      };
+
+      peerContextsRef.current.set(peerId, context);
+      connectionStatesRef.current.set(
+        peerId,
+        pc.connectionState ?? "new",
+      );
+      setConnectionStatesState(new Map(connectionStatesRef.current));
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          const message = createIceCandidateMessage(
+            event.candidate.toJSON(),
+            peerId,
+          );
+          const sent = sendMessage(message);
+          if (!sent) {
+            console.warn("Queued ICE candidate for", peerId);
+          }
+        }
+      };
+
+      pc.ontrack = (event) => {
+        const [stream] = event.streams;
+        if (stream) {
+          updateRemoteStream(peerId, stream);
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        updateConnectionState(peerId, pc.connectionState ?? "new");
+        if (
+          pc.connectionState === "failed" ||
+          pc.connectionState === "disconnected" ||
+          pc.connectionState === "closed"
+        ) {
+          console.warn("Peer connection closed for", peerId, pc.connectionState);
+        }
+      };
+
+      syncLocalTracks(pc);
+
+      return context;
+    },
+    [createIceCandidateMessage, sendMessage, syncLocalTracks, updateConnectionState, updateRemoteStream],
+  );
+
+  const flushIceQueue = useCallback(
+    async (peerId: string) => {
+      const queue = iceCandidateQueuesRef.current.get(peerId);
+      if (!queue || queue.length === 0) {
+        return;
+      }
+
+      const ctx = peerContextsRef.current.get(peerId);
+      if (!ctx) {
+        return;
+      }
+
+      while (queue.length > 0) {
+        const candidate = queue.shift();
+        if (!candidate) {
+          continue;
+        }
+        try {
+          await ctx.pc.addIceCandidate(candidate);
+        } catch (error) {
+          console.error("Error adding queued ICE candidate:", error);
+        }
+      }
+    },
+    [],
+  );
+
+  const startNegotiation = useCallback(
+    async (peerId: string) => {
+      const ctx = ensurePeerContext(peerId);
+      const { pc } = ctx;
+
+      if (ctx.makingOffer || pc.signalingState !== "stable") {
+        console.log(
+          "Skip negotiation for",
+          peerId,
+          "state",
+          pc.signalingState,
+        );
+        return;
+      }
+
       try {
-        await addIceCandidate(candidate);
-        console.log("Processed queued ICE candidate");
+        ctx.makingOffer = true;
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        const sent = sendMessage(createOfferMessage(offer, peerId));
+        if (!sent) {
+          console.warn("Offer queued for", peerId);
+        }
+        console.log("Offer created for", peerId);
       } catch (error) {
-        console.error("Error processing queued ICE candidate:", error);
+        console.error("Error creating offer for", peerId, error);
+      } finally {
+        ctx.makingOffer = false;
+      }
+    },
+    [createOfferMessage, ensurePeerContext, sendMessage],
+  );
+
+  const initiateIfNeeded = useCallback(
+    (peerId: string) => {
+      const selfId = selfPeerIdRef.current;
+      if (!selfId || !localStream) {
+        return;
+      }
+      if (selfId === peerId) {
+        return;
+      }
+      if (selfId.localeCompare(peerId) < 0) {
+        void startNegotiation(peerId);
+      }
+    },
+    [localStream, startNegotiation],
+  );
+
+  const bootstrapNegotiation = useRef<() => void>(() => {});
+  bootstrapNegotiation.current = () => {
+    const selfId = selfPeerIdRef.current;
+    if (!selfId || !localStream) {
+      return;
+    }
+
+    const sortedPeers = Array.from(remotePeersRef.current.keys()).sort();
+    for (const peerId of sortedPeers) {
+      if (peerId === selfId) {
+        continue;
+      }
+      if (selfId.localeCompare(peerId) < 0) {
+        void startNegotiation(peerId);
+        break;
       }
     }
-    iceCandidateQueue.current = [];
-  }, [pc, addIceCandidate]);
+  };
 
-  // Инициация звонка (создание offer)
-  const startCall = useCallback(async () => {
-    if (!pc) {
-      throw new Error("PeerConnection not initialized");
-    }
+  const handleOffer = useCallback(
+    async (sdp: RTCSessionDescriptionInit, meta: SignalingMeta) => {
+      const senderId = meta.senderId;
+      if (!senderId) {
+        console.warn("Offer without sender id", meta);
+        return;
+      }
 
-    try {
-      const offer = await createOffer();
-      sendMessage(createOfferMessage(offer));
-      console.log("Offer created and sent");
-    } catch (error) {
-      console.error("Error creating offer:", error);
-      throw error;
-    }
-  }, [pc, createOffer, sendMessage, createOfferMessage]);
+      const ctx = ensurePeerContext(senderId);
+      const { pc } = ctx;
 
-  // Обработка входящих signaling сообщений
+      const offerCollision =
+        ctx.makingOffer || pc.signalingState !== "stable";
+
+      try {
+        if (offerCollision) {
+          console.log("Offer collision detected, rolling back", senderId);
+          await pc.setLocalDescription({ type: "rollback" });
+        }
+
+        ctx.settingRemoteAnswer = true;
+        await pc.setRemoteDescription(sdp);
+        await flushIceQueue(senderId);
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        const sent = sendMessage(createAnswerMessage(answer, senderId));
+        if (!sent) {
+          console.warn("Answer queued for", senderId);
+        }
+      } catch (error) {
+        console.error("Error handling offer from", senderId, error);
+      } finally {
+        ctx.settingRemoteAnswer = false;
+        ctx.makingOffer = false;
+      }
+    },
+    [createAnswerMessage, ensurePeerContext, flushIceQueue, sendMessage],
+  );
+
+  const handleAnswer = useCallback(
+    async (sdp: RTCSessionDescriptionInit, meta: SignalingMeta) => {
+      const senderId = meta.senderId;
+      if (!senderId) {
+        console.warn("Answer without sender id", meta);
+        return;
+      }
+
+      const ctx = ensurePeerContext(senderId);
+
+      try {
+        ctx.settingRemoteAnswer = true;
+        await ctx.pc.setRemoteDescription(sdp);
+        await flushIceQueue(senderId);
+        console.log("Applied answer from", senderId);
+      } catch (error) {
+        console.error("Error setting remote answer from", senderId, error);
+      } finally {
+        ctx.settingRemoteAnswer = false;
+      }
+    },
+    [ensurePeerContext, flushIceQueue],
+  );
+
+  const handleRemoteCandidate = useCallback(
+    async (candidate: RTCIceCandidateInit, meta: SignalingMeta) => {
+      if (!candidate) {
+        return;
+      }
+
+      const senderId = meta.senderId;
+      if (!senderId) {
+        console.warn("ICE without sender id", meta);
+        return;
+      }
+
+      const ctx = ensurePeerContext(senderId);
+
+      if (
+        !ctx.pc.remoteDescription ||
+        ctx.settingRemoteAnswer
+      ) {
+        const queue = iceCandidateQueuesRef.current.get(senderId) ?? [];
+        queue.push(candidate);
+        iceCandidateQueuesRef.current.set(senderId, queue);
+        return;
+      }
+
+      try {
+        await ctx.pc.addIceCandidate(candidate);
+      } catch (error) {
+        console.error("Error adding ICE candidate from", senderId, error);
+      }
+    },
+    [ensurePeerContext],
+  );
+
+  const handleJoined = useCallback(
+    (payload: JoinedPayload) => {
+      if (!payload.peerId) {
+        return;
+      }
+
+      if (payload.isSelf) {
+        selfPeerIdRef.current = payload.peerId;
+        bootstrapNegotiation.current?.();
+        return;
+      }
+
+      if (selfPeerIdRef.current && payload.peerId === selfPeerIdRef.current) {
+        return;
+      }
+
+      ensurePeerContext(payload.peerId);
+
+      setRemotePeers((previous) => {
+        const existing = previous.get(payload.peerId);
+        if (existing && existing.name === payload.name) {
+          return null;
+        }
+        const next = new Map(previous);
+        next.set(payload.peerId, {
+          peerId: payload.peerId,
+          userId: payload.userId,
+          name: payload.name,
+        });
+        return next;
+      });
+
+      initiateIfNeeded(payload.peerId);
+      bootstrapNegotiation.current?.();
+    },
+    [ensurePeerContext, initiateIfNeeded, setRemotePeers],
+  );
+
+  const handlePeerLeft = useCallback(
+    (peerId: string) => {
+      if (!peerId) {
+        return;
+      }
+
+      destroyPeerConnection(peerId);
+
+      setRemotePeers((previous) => {
+        if (!previous.has(peerId)) {
+          return null;
+        }
+        const next = new Map(previous);
+        next.delete(peerId);
+        return next;
+      });
+    },
+    [destroyPeerConnection, setRemotePeers],
+  );
+
   const handleWebSocketMessage = useCallback(
     (message: SignalingMessage) => {
+      if (!message) {
+        return;
+      }
+
       handleSignalingMessage(message, {
-        onOffer: async (sdp) => {
-          if (!pc) {
-            console.warn("PeerConnection not ready for offer");
-            return;
-          }
-
-          try {
-            await setRemoteDescription(sdp);
-            console.log("Remote description set from offer");
-
-            // Обрабатываем накопленные ICE candidates
-            await processIceCandidateQueue();
-
-            // Создаем и отправляем answer
-            const answer = await createAnswer();
-            sendMessage(createAnswerMessage(answer));
-            console.log("Answer created and sent");
-          } catch (error) {
-            console.error("Error handling offer:", error);
-          }
+        onOffer: handleOffer,
+        onAnswer: handleAnswer,
+        onIceCandidate: handleRemoteCandidate,
+        onUserJoined: (payload: JoinedPayload) => {
+          handleJoined(payload);
         },
-
-        onAnswer: async (sdp) => {
-          if (!pc) {
-            console.warn("PeerConnection not ready for answer");
-            return;
-          }
-
-          try {
-            await setRemoteDescription(sdp);
-            console.log("Remote description set from answer");
-            await processIceCandidateQueue();
-          } catch (error) {
-            console.error("Error handling answer:", error);
-          }
+        onUserLeave: (peerId: string) => {
+          handlePeerLeft(peerId);
         },
-
-        onIceCandidate: async (candidate) => {
-          if (!pc) {
-            console.warn("PeerConnection not ready for ICE candidate");
-            return;
-          }
-
-          try {
-            // Если remote description еще не установлен, ставим в очередь
-            if (!pc.remoteDescription) {
-              iceCandidateQueue.current.push(candidate);
-              console.log(
-                "ICE candidate queued (waiting for remote description)",
-              );
-              return;
-            }
-
-            await addIceCandidate(candidate);
-            console.log("ICE candidate added");
-          } catch (error) {
-            console.error("Error adding ICE candidate:", error);
-          }
-        },
-
-        onUserJoined: (userId, name) => {
-          setRemoteUsers((prev) => new Map(prev.set(userId, name)));
-          console.log(`User joined: ${name} (${userId})`);
-
-          // Если это первый пользователь, инициируем звонок
-          if (remoteUsers.size === 0 && localStream) {
-            setTimeout(() => {
-              startCall().catch(console.error);
-            }, 1000);
-          }
-        },
-
-        onUserLeave: (userId) => {
-          setRemoteUsers((prev) => {
-            const newMap = new Map(prev);
-            newMap.delete(userId);
-            return newMap;
-          });
-          console.log(`User left: ${userId}`);
+        onError: (error) => {
+          console.error("Signaling error:", error);
         },
       });
     },
     [
-      pc,
-      localStream,
-      remoteUsers.size,
+      handleAnswer,
+      handleJoined,
+      handleOffer,
+      handlePeerLeft,
+      handleRemoteCandidate,
       handleSignalingMessage,
-      setRemoteDescription,
-      createAnswer,
-      addIceCandidate,
-      processIceCandidateQueue,
-      sendMessage,
-      createAnswerMessage,
-      startCall,
     ],
   );
 
-  // Отправка ICE candidate через WebSocket
-  const sendIceCandidate = useCallback(
-    (candidate: RTCIceCandidate) => {
-      sendMessage(createIceCandidateMessage(candidate.toJSON()));
-    },
-    [sendMessage, createIceCandidateMessage],
-  );
-
-  // Завершение звонка
-  const endCall = useCallback(() => {
-    sendMessage(createLeaveMessage());
-    closeConnection();
-    setRemoteUsers(new Map());
-    setIsCallActive(false);
-    iceCandidateQueue.current = [];
-    console.log("Call ended");
-  }, [sendMessage, createLeaveMessage, closeConnection]);
-
-  // Настройка обработчика ICE candidates для отправки
   useEffect(() => {
-    if (!pc) return;
+    peerContextsRef.current.forEach((ctx) => {
+      syncLocalTracks(ctx.pc);
+    });
+  }, [localStream, syncLocalTracks]);
 
-    const originalOnIceCandidate = pc.onicecandidate;
-    
-    // Исправление: создаем функцию с правильным контекстом
-    pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-      // Вызываем оригинальный обработчик с правильным контекстом
-      if (originalOnIceCandidate) {
-        try {
-          originalOnIceCandidate.call(pc, event);
-        } catch (error) {
-          console.warn("Error in original onicecandidate handler:", error);
+  useEffect(() => {
+    bootstrapNegotiation.current?.();
+  }, [remotePeers, localStream]);
+
+  useEffect(() => {
+    const states = Array.from(connectionStatesState.values());
+    const hasConnected = states.some((state) => state === "connected");
+    const isConnecting = states.some((state) => state === "connecting");
+    const hasFailed =
+      states.length > 0 &&
+      states.every((state) => state === "failed" || state === "disconnected");
+
+    setIsCallActive(hasConnected);
+
+    if (hasConnected) {
+      setAggregatedConnectionState("connected");
+    } else if (isConnecting) {
+      setAggregatedConnectionState("connecting");
+    } else if (hasFailed) {
+      setAggregatedConnectionState("failed");
+    } else {
+      setAggregatedConnectionState("new");
+    }
+  }, [connectionStatesState]);
+
+  useEffect(() => {
+    onConnectionStateChange?.(aggregatedConnectionState);
+  }, [aggregatedConnectionState, onConnectionStateChange]);
+
+  const remoteParticipants = useMemo(() => {
+    const participants: RemoteParticipant[] = [];
+    remotePeers.forEach((info, peerId) => {
+      participants.push({
+        peerId,
+        name: info.name,
+        stream: remoteStreamsState.get(peerId) ?? null,
+        connectionState: connectionStatesState.get(peerId) ?? "new",
+      });
+    });
+    return participants;
+  }, [remotePeers, remoteStreamsState, connectionStatesState]);
+
+  useEffect(() => {
+    const firstStream = remoteParticipants.find((participant) => participant.stream)?.stream ?? null;
+    onRemoteStream?.(firstStream || null);
+  }, [onRemoteStream, remoteParticipants]);
+
+  const startCall = useCallback(
+    (peerId?: string) => {
+      if (peerId) {
+        void startNegotiation(peerId);
+        return;
+      }
+
+      const selfId = selfPeerIdRef.current;
+      if (!selfId) {
+        return;
+      }
+
+      const sorted = Array.from(remotePeersRef.current.keys()).sort();
+      for (const candidate of sorted) {
+        if (selfId === candidate) {
+          continue;
+        }
+        if (selfId.localeCompare(candidate) < 0) {
+          void startNegotiation(candidate);
+          break;
         }
       }
+    },
+    [startNegotiation],
+  );
 
-      if (event.candidate) {
-        sendIceCandidate(event.candidate);
-      }
-    };
+  const endCall = useCallback(() => {
+    sendMessage(createLeaveMessage());
+    peerContextsRef.current.forEach((_, peerId) => {
+      destroyPeerConnection(peerId);
+    });
+    peerContextsRef.current.clear();
+    iceCandidateQueuesRef.current.clear();
+    remoteStreamsRef.current.clear();
+    setRemoteStreamsState(new Map());
+    connectionStatesRef.current.clear();
+    setConnectionStatesState(new Map());
+    setRemotePeers(() => new Map());
+  }, [createLeaveMessage, destroyPeerConnection, sendMessage, setRemotePeers]);
+
+  useEffect(() => {
+    const peerContexts = peerContextsRef.current;
+    const iceQueues = iceCandidateQueuesRef.current;
+    const remoteStreams = remoteStreamsRef.current;
+    const connectionStates = connectionStatesRef.current;
 
     return () => {
-      pc.onicecandidate = originalOnIceCandidate;
+      peerContexts.forEach((_, peerId) => {
+        destroyPeerConnection(peerId);
+      });
+      peerContexts.clear();
+      iceQueues.clear();
+      remoteStreams.clear();
+      connectionStates.clear();
+      setRemoteStreamsState(new Map());
+      setConnectionStatesState(new Map());
     };
-  }, [pc, sendIceCandidate]);
+  }, [destroyPeerConnection, setConnectionStatesState, setRemoteStreamsState]);
 
   return {
-    // Состояния
     isCallActive,
-    connectionState,
-    remoteStream,
-    remoteUsers: Array.from(remoteUsers.entries()),
-
-    // Методы
+    connectionState: aggregatedConnectionState,
+    remoteParticipants,
     startCall,
     endCall,
     handleWebSocketMessage,
-
-    // PeerConnection для отладки
-    peerConnection: pc,
   };
 }
