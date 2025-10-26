@@ -88,9 +88,35 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}): UseRoomM
     if (!element) {
       return;
     }
+
     if (stream) {
-      element.srcObject = stream;
-    } else {
+      if (element.srcObject !== stream) {
+        element.srcObject = stream;
+      }
+      element.playsInline = true;
+      element.muted = true;
+
+      const ensurePlayback = () => {
+        void element.play().catch((error) => {
+          console.warn("Failed to play local preview video", error);
+        });
+      };
+
+      const haveMetadataReadyState =
+        typeof HTMLMediaElement !== "undefined"
+          ? HTMLMediaElement.HAVE_METADATA
+          : 1;
+
+      if ("onloadedmetadata" in element && element.readyState < haveMetadataReadyState) {
+        element.onloadedmetadata = () => {
+          element.onloadedmetadata = null;
+          ensurePlayback();
+        };
+      }
+
+      ensurePlayback();
+    } else if (element.srcObject) {
+      element.onloadedmetadata = null;
       element.srcObject = null;
     }
   }, []);
@@ -289,8 +315,13 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}): UseRoomM
   }, [emitMediaError, hasAudioInput, isAudioEnabled, localStream, startMedia]);
 
   useEffect(() => {
+    if (!localStream || !isVideoEnabled) {
+      attachLocalStreamToVideo(null);
+      return;
+    }
+
     attachLocalStreamToVideo(localStream);
-  }, [attachLocalStreamToVideo, localStream]);
+  }, [attachLocalStreamToVideo, isVideoEnabled, localStream]);
 
   const toggleVideo = useCallback(async () => {
     if (!hasVideoInput) {
@@ -307,7 +338,10 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}): UseRoomM
       });
       setIsVideoEnabled(newState);
       if (newState) {
+        attachLocalStreamToVideo(localStream);
         emitMediaError(null);
+      } else {
+        attachLocalStreamToVideo(null);
       }
       return;
     }
@@ -320,7 +354,14 @@ export function useRoomMedia({ onMediaError }: UseRoomMediaProps = {}): UseRoomM
         console.error("Failed to start media when toggling video", error);
       }
     }
-  }, [emitMediaError, hasVideoInput, isVideoEnabled, localStream, startMedia]);
+  }, [
+    attachLocalStreamToVideo,
+    emitMediaError,
+    hasVideoInput,
+    isVideoEnabled,
+    localStream,
+    startMedia,
+  ]);
 
   const toggleScreenShare = useCallback(async () => {
     try {

@@ -438,7 +438,7 @@ function RoomPageContent() {
 
   return (
     <div className="relative min-h-screen bg-gradient-to-br from-primary-50 to-primary-100">
-      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 pb-[220px] pt-6">
+      <div className="flex min-h-screen flex-col">
         <RoomHeader
           roomId={roomId || "unknown"}
           roomName={roomInfo?.name}
@@ -447,15 +447,18 @@ function RoomPageContent() {
           roomDetails={headerDetails}
         />
 
-        <RoomVideoGrid
-          roomId={roomId || "unknown"}
-          userName={userName}
-          isConnected={isConnected}
-          localVideoRef={localVideoRef as React.RefObject<HTMLVideoElement>}
-          isVideoEnabled={isVideoEnabled}
-          localStream={localStream}
-          remoteParticipants={remoteParticipants}
-        />
+        <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 pb-[220px] pt-6">
+          <RoomVideoGrid
+            roomId={roomId || "unknown"}
+            userName={userName}
+            isConnected={isConnected}
+            localVideoRef={localVideoRef as React.RefObject<HTMLVideoElement>}
+            isVideoEnabled={isVideoEnabled}
+            isAudioEnabled={isAudioEnabled}
+            localStream={localStream}
+            remoteParticipants={remoteParticipants}
+          />
+        </div>
       </div>
 
       <RoomControls
@@ -642,7 +645,7 @@ function RoomPageDesignStub() {
 
   return (
     <div className="relative min-h-screen bg-gradient-to-br from-primary-50 to-primary-100">
-      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 pb-[220px] pt-6">
+      <div className="flex min-h-screen flex-col">
         <RoomHeader
           roomId={mockRoomId}
           roomName={roomInfo.name}
@@ -655,15 +658,18 @@ function RoomPageDesignStub() {
           }}
         />
 
-        <RoomVideoGrid
-          roomId={mockRoomId}
-          userName={mockUser}
-          isConnected
-          localVideoRef={localVideoRef as React.RefObject<HTMLVideoElement>}
-          isVideoEnabled={isVideoEnabled}
-          localStream={null}
-          remoteParticipants={remoteParticipants}
-        />
+        <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 pb-[220px] pt-6">
+          <RoomVideoGrid
+            roomId={mockRoomId}
+            userName={mockUser}
+            isConnected
+            localVideoRef={localVideoRef as React.RefObject<HTMLVideoElement>}
+            isVideoEnabled={isVideoEnabled}
+            isAudioEnabled={isAudioEnabled}
+            localStream={null}
+            remoteParticipants={remoteParticipants}
+          />
+        </div>
       </div>
 
       <RoomControls

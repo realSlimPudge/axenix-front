@@ -570,28 +570,44 @@ export function useWebRTC({
         return;
       }
 
-      if (payload.userId) {
-        const duplicates = Array.from(remotePeersRef.current.entries())
-          .filter(([peerId, info]) => peerId !== payload.peerId && info.userId === payload.userId)
-          .map(([peerId]) => peerId);
+      const duplicatePeerIds: string[] = [];
 
-        if (duplicates.length > 0) {
-          duplicates.forEach((peerId) => {
-            destroyPeerConnection(peerId);
-            clearPeerRecovery(peerId);
-          });
-
-          setRemotePeers((previous) => {
-            const next = new Map(previous);
-            let changed = false;
-            duplicates.forEach((peerId) => {
-              if (next.delete(peerId)) {
-                changed = true;
-              }
-            });
-            return changed ? next : null;
-          });
+      remotePeersRef.current.forEach((info, peerId) => {
+        if (peerId === payload.peerId) {
+          return;
         }
+
+        if (payload.userId && info.userId && info.userId === payload.userId) {
+          duplicatePeerIds.push(peerId);
+          return;
+        }
+
+        if (
+          !payload.userId &&
+          !info.userId &&
+          payload.name &&
+          info.name === payload.name
+        ) {
+          duplicatePeerIds.push(peerId);
+        }
+      });
+
+      if (duplicatePeerIds.length > 0) {
+        duplicatePeerIds.forEach((peerId) => {
+          destroyPeerConnection(peerId);
+          clearPeerRecovery(peerId);
+        });
+
+        setRemotePeers((previous) => {
+          const next = new Map(previous);
+          let changed = false;
+          duplicatePeerIds.forEach((peerId) => {
+            if (next.delete(peerId)) {
+              changed = true;
+            }
+          });
+          return changed ? next : null;
+        });
       }
 
       ensurePeerContext(payload.peerId);
