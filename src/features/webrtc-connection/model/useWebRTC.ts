@@ -43,6 +43,16 @@ interface UseWebRTCResult {
   handleWebSocketMessage: (message: SignalingMessage) => void;
 }
 
+const PEER_STREAM_TIMEOUT_MS = 10000;
+const PEER_RETRY_DELAY_MS = 4000;
+const PEER_MAX_RETRIES = 3;
+
+interface PeerRecoveryState {
+  attempts: number;
+  reconnectTimer?: ReturnType<typeof setTimeout>;
+  streamTimer?: ReturnType<typeof setTimeout>;
+}
+
 export function useWebRTC({
   localStream,
   sendMessage,
@@ -69,6 +79,14 @@ export function useWebRTC({
   const [connectionStatesState, setConnectionStatesState] = useState(
     new Map<string, RTCPeerConnectionState>(),
   );
+  const peerRecoveryRef = useRef(new Map<string, PeerRecoveryState>());
+  const restartPeerConnectionRef = useRef<
+    (peerId: string, reason: string) => void
+  >(() => {});
+  const scheduleStreamWatchRef = useRef<
+    (peerId: string, timeoutMs?: number) => void
+  >(() => {});
+  const markStreamReceivedRef = useRef<(peerId: string) => void>(() => {});
 
   const selfPeerIdRef = useRef<string | null>(null);
   const [isCallActive, setIsCallActive] = useState(false);
@@ -192,20 +210,34 @@ export function useWebRTC({
         }
       };
 
-      pc.ontrack = (event) => {
-        const [stream] = event.streams;
-        if (stream) {
-          updateRemoteStream(peerId, stream);
-        }
-      };
+  pc.ontrack = (event) => {
+    const [stream] = event.streams;
+    if (stream) {
+      updateRemoteStream(peerId, stream);
+      markStreamReceivedRef.current(peerId);
+    }
+  };
 
-      pc.onconnectionstatechange = () => {
-        updateConnectionState(peerId, pc.connectionState ?? "new");
-        if (
-          pc.connectionState === "failed" ||
-          pc.connectionState === "disconnected" ||
-          pc.connectionState === "closed"
-        ) {
+  pc.onconnectionstatechange = () => {
+    const state = pc.connectionState ?? "new";
+    updateConnectionState(peerId, state);
+    if (state === "connected") {
+      markStreamReceivedRef.current(peerId);
+      if (!remoteStreamsRef.current.get(peerId)) {
+        scheduleStreamWatchRef.current(peerId, PEER_STREAM_TIMEOUT_MS / 2);
+      }
+    } else if (
+      state === "failed" ||
+      state === "disconnected" ||
+      state === "closed"
+    ) {
+      restartPeerConnectionRef.current(peerId, `connection-${state}`);
+    }
+    if (
+      pc.connectionState === "failed" ||
+      pc.connectionState === "disconnected" ||
+      pc.connectionState === "closed"
+    ) {
           console.warn("Peer connection closed for", peerId, pc.connectionState);
         }
       };
@@ -292,6 +324,119 @@ export function useWebRTC({
     },
     [localStream, startNegotiation],
   );
+
+  const getPeerRecoveryState = useCallback((peerId: string) => {
+    let state = peerRecoveryRef.current.get(peerId);
+    if (!state) {
+      state = { attempts: 0 };
+      peerRecoveryRef.current.set(peerId, state);
+    }
+    return state;
+  }, []);
+
+  const markStreamReceived = useCallback((peerId: string) => {
+    const state = getPeerRecoveryState(peerId);
+    state.attempts = 0;
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = undefined;
+    }
+    if (state.streamTimer) {
+      clearTimeout(state.streamTimer);
+      state.streamTimer = undefined;
+    }
+  }, [getPeerRecoveryState]);
+
+  const clearPeerRecovery = useCallback((peerId: string) => {
+    const state = peerRecoveryRef.current.get(peerId);
+    if (!state) {
+      return;
+    }
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+    }
+    if (state.streamTimer) {
+      clearTimeout(state.streamTimer);
+    }
+    peerRecoveryRef.current.delete(peerId);
+  }, []);
+
+  const scheduleStreamWatch = useCallback(
+    (peerId: string, timeoutMs = PEER_STREAM_TIMEOUT_MS) => {
+      const state = getPeerRecoveryState(peerId);
+      if (state.streamTimer) {
+        clearTimeout(state.streamTimer);
+      }
+      state.streamTimer = setTimeout(() => {
+        state.streamTimer = undefined;
+        if (!remoteStreamsRef.current.get(peerId)) {
+          restartPeerConnectionRef.current(peerId, "stream-timeout");
+        }
+      }, timeoutMs);
+    },
+    [getPeerRecoveryState],
+  );
+
+  const restartPeerConnection = useCallback(
+    (peerId: string, reason: string) => {
+      const state = getPeerRecoveryState(peerId);
+      if (state.reconnectTimer) {
+        clearTimeout(state.reconnectTimer);
+      }
+
+      if (!remotePeersRef.current.has(peerId)) {
+        return;
+      }
+
+      if (state.attempts >= PEER_MAX_RETRIES) {
+        console.warn(
+          "Reached maximum reconnection attempts for peer",
+          peerId,
+          reason,
+        );
+        return;
+      }
+
+      state.attempts += 1;
+      state.reconnectTimer = setTimeout(() => {
+        state.reconnectTimer = undefined;
+        if (!remotePeersRef.current.has(peerId)) {
+          return;
+        }
+
+        console.info(
+          `Restarting peer connection for ${peerId} (attempt ${state.attempts}) due to ${reason}`,
+        );
+        if (state.streamTimer) {
+          clearTimeout(state.streamTimer);
+          state.streamTimer = undefined;
+        }
+        destroyPeerConnection(peerId);
+        ensurePeerContext(peerId);
+        initiateIfNeeded(peerId);
+        scheduleStreamWatch(peerId);
+      }, PEER_RETRY_DELAY_MS);
+    },
+    [
+      destroyPeerConnection,
+      ensurePeerContext,
+      getPeerRecoveryState,
+      initiateIfNeeded,
+      scheduleStreamWatch,
+    ],
+  );
+
+  useEffect(() => {
+    restartPeerConnectionRef.current = restartPeerConnection;
+  }, [restartPeerConnection]);
+
+  useEffect(() => {
+    scheduleStreamWatchRef.current = scheduleStreamWatch;
+  }, [scheduleStreamWatch]);
+
+  useEffect(() => {
+    markStreamReceivedRef.current = markStreamReceived;
+  }, [markStreamReceived]);
 
   const bootstrapNegotiation = useRef<() => void>(() => {});
   bootstrapNegotiation.current = () => {
@@ -443,8 +588,9 @@ export function useWebRTC({
 
       initiateIfNeeded(payload.peerId);
       bootstrapNegotiation.current?.();
+      scheduleStreamWatch(payload.peerId);
     },
-    [ensurePeerContext, initiateIfNeeded, setRemotePeers],
+    [ensurePeerContext, initiateIfNeeded, scheduleStreamWatch, setRemotePeers],
   );
 
   const handlePeerLeft = useCallback(
@@ -454,6 +600,7 @@ export function useWebRTC({
       }
 
       destroyPeerConnection(peerId);
+      clearPeerRecovery(peerId);
 
       setRemotePeers((previous) => {
         if (!previous.has(peerId)) {
@@ -464,7 +611,7 @@ export function useWebRTC({
         return next;
       });
     },
-    [destroyPeerConnection, setRemotePeers],
+    [clearPeerRecovery, destroyPeerConnection, setRemotePeers],
   );
 
   const handleWebSocketMessage = useCallback(
@@ -589,7 +736,11 @@ export function useWebRTC({
     connectionStatesRef.current.clear();
     setConnectionStatesState(new Map());
     setRemotePeers(() => new Map());
-  }, [createLeaveMessage, destroyPeerConnection, sendMessage, setRemotePeers]);
+    peerRecoveryRef.current.forEach((_, peerId) => {
+      clearPeerRecovery(peerId);
+    });
+    peerRecoveryRef.current.clear();
+  }, [clearPeerRecovery, createLeaveMessage, destroyPeerConnection, sendMessage, setRemotePeers]);
 
   useEffect(() => {
     const peerContexts = peerContextsRef.current;
@@ -607,8 +758,12 @@ export function useWebRTC({
       connectionStates.clear();
       setRemoteStreamsState(new Map());
       setConnectionStatesState(new Map());
+      peerRecoveryRef.current.forEach((_, peerId) => {
+        clearPeerRecovery(peerId);
+      });
+      peerRecoveryRef.current.clear();
     };
-  }, [destroyPeerConnection, setConnectionStatesState, setRemoteStreamsState]);
+  }, [clearPeerRecovery, destroyPeerConnection, setConnectionStatesState, setRemoteStreamsState]);
 
   return {
     isCallActive,

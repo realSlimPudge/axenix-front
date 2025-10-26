@@ -2,18 +2,18 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Axenix chat",
-  description: "Video chat",
+    title: "Axenix chat",
+    description: "Video chat",
 };
 
 export default function RootLayout({
-  children,
+    children,
 }: Readonly<{
-  children: React.ReactNode;
+    children: React.ReactNode;
 }>) {
-  return (
-    <html lang="ru">
-      <body className="antialiased">{children}</body>
-    </html>
-  );
+    return (
+        <html lang="ru">
+            <body className="antialiased ">{children}</body>
+        </html>
+    );
 }

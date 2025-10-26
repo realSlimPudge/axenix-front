@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef } from "react";
-import { Avatar } from "@/shared/ui";
+import { Card } from "@/shared/ui";
 import { VideoOff, User, Wifi, WifiOff, Users } from "lucide-react";
 import { type RemoteParticipant } from "@/features/webrtc-connection";
 
@@ -36,38 +36,35 @@ function RemoteVideoTile({ participant }: { participant: RemoteParticipant }) {
   const isConnected = participant.connectionState === "connected";
 
   return (
-    <div className="relative aspect-video rounded-lg overflow-hidden bg-gray-800 border-2 border-gray-700">
+    <div className="relative aspect-video overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
       {participant.stream ? (
         <video
           ref={videoRef}
           autoPlay
-          className="w-full h-full object-cover"
+          className="h-full w-full object-cover"
         />
       ) : (
-        <div className="w-full h-full flex flex-col items-center justify-center text-white gap-3">
-          <VideoOff className="w-12 h-12 text-gray-400" />
-          <p className="text-sm text-gray-300">Ожидание видео</p>
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-gradient-to-br from-gray-50 to-white">
+          <VideoOff className="h-12 w-12 text-gray-400" />
+          <p className="text-sm text-gray-500">Ожидание видео</p>
         </div>
       )}
 
-      <div className="absolute top-3 left-3 flex items-center gap-2">
+      <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-white/90 px-3 py-1 text-xs font-medium text-gray-600 shadow-sm backdrop-blur">
         {isConnected ? (
-          <Wifi className="w-4 h-4 text-success-500" />
+          <Wifi className="h-4 w-4 text-success-500" />
         ) : (
-          <WifiOff className="w-4 h-4 text-error-500" />
+          <WifiOff className="h-4 w-4 text-error-500" />
         )}
-        <span className="text-xs bg-black bg-opacity-50 text-white px-2 py-1 rounded">
+        <span>
           {isConnected ? "Подключен" : participant.connectionState || "Нет связи"}
         </span>
       </div>
 
-      <div className="absolute bottom-3 left-3">
-        <div className="bg-black bg-opacity-50 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
-          <Avatar alt={participant.name || participant.peerId} size="sm" />
-          <span title={participant.name || participant.peerId} className="truncate max-w-[12rem]">
-            {participant.name || participant.peerId}
-          </span>
-        </div>
+      <div className="absolute bottom-4 left-4 rounded-full bg-white/90 px-4 py-1 text-sm font-medium text-gray-800 shadow-sm backdrop-blur">
+        <span title={participant.name || participant.peerId} className="block max-w-[12rem] truncate">
+          {participant.name || participant.peerId}
+        </span>
       </div>
     </div>
   );
@@ -98,76 +95,76 @@ export function RoomVideoGrid({
   }, [remoteParticipants]);
 
   return (
-    <div className="flex-1 p-4">
-      <div className={`grid gap-4 h-full ${gridColumns}`}>
-        <div className="relative aspect-video rounded-lg overflow-hidden bg-gray-800 border-2 border-gray-700">
-          {localStream && isVideoEnabled ? (
-            <video
-              ref={localVideoRef}
-              autoPlay
-              muted
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="w-full h-full flex flex-col items-center justify-center text-white gap-3">
-              {localStream ? (
-                <VideoOff className="w-16 h-16 text-gray-400" />
-              ) : (
-                <User className="w-16 h-16 text-gray-400" />
-              )}
-              <p className="text-lg">{userName || "Вы"}</p>
-              <p className="text-sm text-gray-400">
-                {!localStream
-                  ? "Подключение к камере"
-                  : !isVideoEnabled
-                    ? "Камера отключена"
-                    : "Ожидание видео"}
-              </p>
-            </div>
-          )}
-
-          <div className="absolute top-3 left-3 flex items-center gap-2">
-            {isConnected ? (
-              <Wifi className="w-4 h-4 text-success-500" />
+    <div className="flex-1">
+      <Card
+        variant="elevated"
+        className="h-full bg-white/80 backdrop-blur"
+      >
+        <div className={`grid h-full gap-4 ${gridColumns}`}>
+          <div className="relative aspect-video overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+            {localStream && isVideoEnabled ? (
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                className="h-full w-full object-cover"
+              />
             ) : (
-              <WifiOff className="w-4 h-4 text-error-500" />
+              <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-gradient-to-br from-gray-50 to-white text-gray-600">
+                {localStream ? (
+                  <VideoOff className="h-14 w-14 text-gray-400" />
+                ) : (
+                  <User className="h-14 w-14 text-gray-300" />
+                )}
+                <p className="text-lg">{userName || "Вы"}</p>
+                <p className="text-sm text-gray-500">
+                  {!localStream
+                    ? "Подключение к камере"
+                    : !isVideoEnabled
+                      ? "Камера отключена"
+                      : "Ожидание видео"}
+                </p>
+              </div>
             )}
-            <span className="text-xs bg-black bg-opacity-50 text-white px-2 py-1 rounded">
-              {isConnected ? "Подключен" : "Отключен"}
-            </span>
-          </div>
 
-          <div className="absolute bottom-3 left-3">
-            <div className="bg-black bg-opacity-50 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
-              <Avatar alt={userName || "Вы"} size="sm" />
-              <span title={userName || "Вы"} className="truncate max-w-[12rem]">
+            <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-white/90 px-3 py-1 text-xs font-medium text-gray-600 shadow-sm backdrop-blur">
+              {isConnected ? (
+                <Wifi className="h-4 w-4 text-success-500" />
+              ) : (
+                <WifiOff className="h-4 w-4 text-error-500" />
+              )}
+              <span>{isConnected ? "Подключен" : "Отключен"}</span>
+            </div>
+
+            <div className="absolute bottom-4 left-4 rounded-full bg-white/90 px-4 py-1 text-sm font-medium text-gray-800 shadow-sm backdrop-blur">
+              <span title={userName || "Вы"} className="block max-w-[12rem] truncate">
                 {userName || "Вы"}
                 {localStream && !isVideoEnabled && " (камера выкл.)"}
               </span>
             </div>
           </div>
-        </div>
 
-        {sortedParticipants.length === 0 ? (
-          <div className="aspect-video rounded-lg overflow-hidden bg-gray-800 border-2 border-gray-700 flex flex-col items-center justify-center text-white gap-4">
-            <Users className="w-16 h-16 text-gray-400" />
-            <p className="text-lg">Ожидание участников</p>
-            <div className="text-sm text-gray-400 text-center">
-              Поделитесь ID комнаты, чтобы пригласить друзей.
+          {sortedParticipants.length === 0 ? (
+            <div className="flex aspect-video flex-col items-center justify-center gap-4 overflow-hidden rounded-2xl border border-dashed border-primary-200 bg-white text-center shadow-sm">
+              <Users className="h-16 w-16 text-primary-300" />
+              <p className="text-lg font-medium text-gray-800">Ожидание участников</p>
+              <div className="px-6 text-sm text-gray-500">
+                Поделитесь ID комнаты, чтобы пригласить друзей.
+              </div>
+              <div className="rounded-full bg-primary-50 px-4 py-2 text-xs font-mono text-primary-600">
+                {roomId}
+              </div>
             </div>
-            <div className="text-xs font-mono bg-gray-700 px-3 py-2 rounded">
-              {roomId}
-            </div>
-          </div>
-        ) : (
-          sortedParticipants.map((participant) => (
-            <RemoteVideoTile
-              key={participant.peerId}
-              participant={participant}
-            />
-          ))
-        )}
-      </div>
+          ) : (
+            sortedParticipants.map((participant) => (
+              <RemoteVideoTile
+                key={participant.peerId}
+                participant={participant}
+              />
+            ))
+          )}
+        </div>
+      </Card>
     </div>
   );
 }
