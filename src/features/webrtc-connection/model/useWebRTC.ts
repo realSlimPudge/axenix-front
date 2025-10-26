@@ -661,6 +661,31 @@ export function useWebRTC({
     [clearPeerRecovery, destroyPeerConnection, setRemotePeers],
   );
 
+  const handleSignalingError = useCallback(
+    (error: string, meta: SignalingMeta) => {
+      console.error("Signaling error:", error, meta);
+
+      if (error !== "peer not found") {
+        return;
+      }
+
+      const peerIdFromPayload =
+        typeof meta.payload?.peer_id === "string"
+          ? (meta.payload.peer_id as string)
+          : undefined;
+
+      const missingPeerId =
+        peerIdFromPayload ?? meta.targetId ?? meta.senderId ?? null;
+
+      if (!missingPeerId) {
+        return;
+      }
+
+      handlePeerLeft(missingPeerId);
+    },
+    [handlePeerLeft],
+  );
+
   const handleWebSocketMessage = useCallback(
     (message: SignalingMessage) => {
       if (!message) {
@@ -677,8 +702,8 @@ export function useWebRTC({
         onUserLeave: (peerId: string) => {
           handlePeerLeft(peerId);
         },
-        onError: (error) => {
-          console.error("Signaling error:", error);
+        onError: (error, meta) => {
+          handleSignalingError(error, meta);
         },
       });
     },
@@ -689,6 +714,7 @@ export function useWebRTC({
       handlePeerLeft,
       handleRemoteCandidate,
       handleSignalingMessage,
+      handleSignalingError,
     ],
   );
 

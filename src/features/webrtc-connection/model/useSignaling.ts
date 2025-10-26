@@ -44,7 +44,7 @@ export function useSignaling() {
         ) => void;
         onUserJoined: (payload: JoinedPayload, meta: SignalingMeta) => void;
         onUserLeave: (peerId: string, meta: SignalingMeta) => void;
-        onError?: (error: string) => void;
+        onError?: (error: string, meta: SignalingMeta) => void;
       },
     ) => {
       console.log("Processing signaling message:", message);
@@ -56,7 +56,7 @@ export function useSignaling() {
       };
 
       if (message.error) {
-        handlers.onError?.(message.error);
+        handlers.onError?.(message.error, meta);
         return;
       }
 
