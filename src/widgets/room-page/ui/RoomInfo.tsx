@@ -1,15 +1,20 @@
 import { Calendar, Clock, Users, Wifi } from "lucide-react";
 
+interface RoomPeer {
+  id: string;
+  user_id?: string;
+  display_name?: string;
+  status?: string;
+}
+
 interface RoomInfoData {
-  ID: string;
-  Name: string;
-  Owner: string;
-  Link: string;
-  Peers: Record<string, any>;
-  Tracks: Record<string, any>;
-  CreatedAt: string;
-  ExpiresAt: string;
-  
+  id: string;
+  name: string;
+  owner: string;
+  link: string;
+  peers: RoomPeer[];
+  createdAt?: string | null;
+  expiresAt?: string | null;
 }
 
 interface RoomInfoProps {
@@ -18,6 +23,13 @@ interface RoomInfoProps {
 }
 
 export function RoomInfo({ roomInfo, isConnected }: RoomInfoProps) {
+  const createdAt = roomInfo.createdAt
+    ? new Date(roomInfo.createdAt).toLocaleString()
+    : "-";
+  const expiresAt = roomInfo.expiresAt
+    ? new Date(roomInfo.expiresAt).toLocaleString()
+    : "-";
+
   return (
     <div className="bg-gray-800 p-4 border-t border-gray-700">
       <div className="max-w-4xl mx-auto text-sm text-gray-300">
@@ -26,7 +38,7 @@ export function RoomInfo({ roomInfo, isConnected }: RoomInfoProps) {
             <Calendar className="w-4 h-4 text-gray-500" />
             <div>
               <span className="text-gray-500">Создана:</span>
-              <p>{new Date(roomInfo.CreatedAt).toLocaleString()}</p>
+              <p>{createdAt}</p>
             </div>
           </div>
 
@@ -34,7 +46,7 @@ export function RoomInfo({ roomInfo, isConnected }: RoomInfoProps) {
             <Clock className="w-4 h-4 text-gray-500" />
             <div>
               <span className="text-gray-500">Истекает:</span>
-              <p>{new Date(roomInfo.ExpiresAt).toLocaleString()}</p>
+              <p>{expiresAt}</p>
             </div>
           </div>
 
@@ -42,7 +54,7 @@ export function RoomInfo({ roomInfo, isConnected }: RoomInfoProps) {
             <Users className="w-4 h-4 text-gray-500" />
             <div>
               <span className="text-gray-500">Участников:</span>
-              <p>{Object.keys(roomInfo.Peers).length}</p>
+              <p>{roomInfo.peers.length}</p>
             </div>
           </div>
 
@@ -50,9 +62,7 @@ export function RoomInfo({ roomInfo, isConnected }: RoomInfoProps) {
             <Wifi className="w-4 h-4 text-gray-500" />
             <div>
               <span className="text-gray-500">WebSocket:</span>
-              <p
-                className={isConnected ? "text-success-400" : "text-error-400"}
-              >
+              <p className={isConnected ? "text-success-400" : "text-error-400"}>
                 {isConnected ? "Подключен" : "Отключен"}
               </p>
             </div>

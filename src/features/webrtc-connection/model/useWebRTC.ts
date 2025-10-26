@@ -570,6 +570,30 @@ export function useWebRTC({
         return;
       }
 
+      if (payload.userId) {
+        const duplicates = Array.from(remotePeersRef.current.entries())
+          .filter(([peerId, info]) => peerId !== payload.peerId && info.userId === payload.userId)
+          .map(([peerId]) => peerId);
+
+        if (duplicates.length > 0) {
+          duplicates.forEach((peerId) => {
+            destroyPeerConnection(peerId);
+            clearPeerRecovery(peerId);
+          });
+
+          setRemotePeers((previous) => {
+            const next = new Map(previous);
+            let changed = false;
+            duplicates.forEach((peerId) => {
+              if (next.delete(peerId)) {
+                changed = true;
+              }
+            });
+            return changed ? next : null;
+          });
+        }
+      }
+
       ensurePeerContext(payload.peerId);
 
       setRemotePeers((previous) => {
@@ -590,7 +614,14 @@ export function useWebRTC({
       bootstrapNegotiation.current?.();
       scheduleStreamWatch(payload.peerId);
     },
-    [ensurePeerContext, initiateIfNeeded, scheduleStreamWatch, setRemotePeers],
+    [
+      clearPeerRecovery,
+      destroyPeerConnection,
+      ensurePeerContext,
+      initiateIfNeeded,
+      scheduleStreamWatch,
+      setRemotePeers,
+    ],
   );
 
   const handlePeerLeft = useCallback(
@@ -747,6 +778,7 @@ export function useWebRTC({
     const iceQueues = iceCandidateQueuesRef.current;
     const remoteStreams = remoteStreamsRef.current;
     const connectionStates = connectionStatesRef.current;
+    const recoveryStates = peerRecoveryRef.current;
 
     return () => {
       peerContexts.forEach((_, peerId) => {
@@ -758,10 +790,10 @@ export function useWebRTC({
       connectionStates.clear();
       setRemoteStreamsState(new Map());
       setConnectionStatesState(new Map());
-      peerRecoveryRef.current.forEach((_, peerId) => {
+      recoveryStates.forEach((_, peerId) => {
         clearPeerRecovery(peerId);
       });
-      peerRecoveryRef.current.clear();
+      recoveryStates.clear();
     };
   }, [clearPeerRecovery, destroyPeerConnection, setConnectionStatesState, setRemoteStreamsState]);
 
